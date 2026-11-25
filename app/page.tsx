@@ -1,159 +1,249 @@
-
 "use client";
-import { useEffect, useState, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { supabase, Lead } from "@/lib/supabase";
+import { useEffect, useState } from "react";
+import { supabase } from "../lib/supabase";
 
-const STATUSES = ["Bagong Inquiry","Kinausap","Nag-Follow Up","Nagbayad","Dead / Hindi Nag-reply"];
-const SERVICES = ["Hair Rebond","Lash Extensions","Nail Extension","Facial","Hair Color","Manicure/Pedicure","Iba pa"];
-const SOURCES = ["Facebook","TikTok","Walk-in","Shopee","Referral","Public Form"];
-const DEMO: Lead[] = [
-  {id:"d1",name:"Maria Santos",phone:"0917-123-4567",service:"Lash Extensions",source:"Facebook",budget:1500,notes:"Gusto bukas ng hapon",status:"Bagong Inquiry",created_at:new Date(Date.now()-30*60000).toISOString()},
-  {id:"d2",name:"Juan Dela Cruz",phone:"0928-987-6543",service:"Hair Rebond",source:"TikTok",budget:2500,notes:"",status:"Bagong Inquiry",created_at:new Date(Date.now()-3*3600000).toISOString()},
-  {id:"d3",name:"Angel Reyes",phone:"0905-111-2222",service:"Nail Extension",source:"Shopee",budget:1200,notes:"",status:"Kinausap",created_at:new Date(Date.now()-26*3600000).toISOString()},
-  {id:"d4",name:"Kathleen Lim",phone:"0919-333-4444",service:"Facial",source:"Referral",budget:1800,notes:"",status:"Kinausap",created_at:new Date(Date.now()-2*86400000).toISOString()},
-  {id:"d5",name:"Jessa Villanueva",phone:"0933-555-6666",service:"Hair Color",source:"Facebook",budget:3000,notes:"",status:"Nag-Follow Up",created_at:new Date(Date.now()-1*86400000).toISOString()},
-  {id:"d6",name:"Rica Mendoza",phone:"0916-777-8888",service:"Lash Extensions",source:"Walk-in",budget:1500,notes:"",status:"Nagbayad",created_at:new Date(Date.now()-1*86400000).toISOString()},
-  {id:"d7",name:"Paolo Garcia",phone:"0922-999-0000",service:"Hair Rebond",source:"Facebook",budget:2500,notes:"",status:"Nagbayad",created_at:new Date(Date.now()-3*86400000).toISOString()},
-  {id:"d8",name:"Mika Torres",phone:"0956-222-3333",service:"Facial",source:"TikTok",budget:1800,notes:"No reply 3 days",status:"Dead / Hindi Nag-reply",created_at:new Date(Date.now()-4*86400000).toISOString()},
-];
+type Lead = {
+  id: number;
+  name: string;
+  phone: string;
+  fb_link?: string | null;
+  service: string;
+  source: string;
+  budget?: number | null;
+  notes?: string | null;
+  status: string;
+  created_at: string;
+};
 
-function timeAgo(iso:string){
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff/60000); const hrs = Math.floor(diff/3600000); const days = Math.floor(diff/86400000);
-  if(mins<60) return mins<=1?"just now":`${mins} mins ago`;
-  if(hrs<24) return `${hrs} hr${hrs>1?"s":""} ago`;
-  return `${days} day${days>1?"s":""} ago`;
-}
-function hoursSince(iso:string){ return (Date.now()-new Date(iso).getTime())/3600000; }
+export default function Home() {
+  const [view, setView] = useState<"owner" | "inquire">("owner");
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("All");
 
-function App(){
-  const params = useSearchParams();
-  const isInquire = params.get("view")==="inquire";
-  const [leads,setLeads] = useState<Lead[]>([]);
-  const [loading,setLoading] = useState(true);
-  const [pin,setPin] = useState("");
-  const [unlocked,setUnlocked] = useState(false);
-  const [savedPin,setSavedPin] = useState("1234");
-  const [search,setSearch] = useState("");
-  const [filter,setFilter] = useState("All");
-  const [toast,setToast] = useState("");
-  const [selected,setSelected] = useState<Lead|null>(null);
-  const [copied,setCopied] = useState("");
-  // forms
-  const [f,setF] = useState({name:"",phone:"",service:"",source:"Facebook",budget:"",notes:""});
-  const [pf,setPf] = useState({name:"",phone:"",service:"Lash Extensions",budget:"",notes:""});
-  const [pfDone,setPfDone] = useState("");
+  // Form states
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [fbLink, setFbLink] = useState("");
+  const [service, setService] = useState("Nail Extension");
+  const [source, setSource] = useState("Facebook");
+  const [budget, setBudget] = useState("");
+  const [notes, setNotes] = useState("");
+  const [sending, setSending] = useState(false);
 
-  useEffect(()=>{ const p = localStorage.getItem("lcp_pin"); if(p) setSavedPin(p); if(localStorage.getItem("lcp_unlocked")==="1") setUnlocked(true); },[]);
-  async function fetchLeads(){
-    const {data,error} = await supabase.from("leads").select("*").order("created_at",{ascending:false});
-    if(error){ setLeads(DEMO); } else if(!data||data.length===0){ setLeads(DEMO); } else setLeads(data as Lead[]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("view") === "inquire") setView("inquire");
+    fetchLeads();
+    const channel = supabase
+      .channel("leads-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "leads" }, () => fetchLeads())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  async function fetchLeads() {
+    const { data, error } = await supabase.from("leads").select("*").order("created_at", { ascending: false });
+    if (!error && data) setLeads(data as Lead[]);
     setLoading(false);
   }
-  useEffect(()=>{ fetchLeads();
-    const ch = supabase.channel("leads-ch").on("postgres_changes",{event:"*",schema:"public",table:"leads"},()=>{ fetchLeads(); }).subscribe();
-    return ()=>{ supabase.removeChannel(ch); };
-  },[]);
 
-  function showToast(m:string){ setToast(m); setTimeout(()=>setToast(""),3000); }
-  async function saveLead(e:any){
-    e.preventDefault(); if(!f.name.trim()) return alert("Lagay mo muna name");
-    const payload = {name:f.name,phone:f.phone,service:f.service||"General Inquiry",source:f.source,budget:f.budget?Number(f.budget):null,notes:f.notes,status:"Bagong Inquiry"};
-    const {error} = await supabase.from("leads").insert(payload);
-    if(error){ setLeads(prev=>[{...payload,id:"tmp"+Date.now(),created_at:new Date().toISOString(),budget:payload.budget} as Lead,...prev]); }
-    setF({name:"",phone:"",service:"",source:"Facebook",budget:"",notes:""}); showToast(`Na-save na si ${payload.name}!`); fetchLeads();
-  }
-  async function submitPublic(e:any){
-    e.preventDefault(); if(!pf.name.trim()||!pf.phone.trim()) return alert("Name at Phone kailangan");
-    const payload = {name:pf.name,phone:pf.phone,service:pf.service,source:"Public Form",budget:pf.budget?Number(pf.budget):null,notes:pf.notes,status:"Bagong Inquiry"};
-    const {error} = await supabase.from("leads").insert(payload);
-    if(error) return alert("May error. Try ulit o i-message mo kami directly. Error: "+error.message);
-    setPfDone(pf.name); setPf({name:"",phone:"",service:"Lash Extensions",budget:"",notes:""});
-  }
-  async function updateStatus(lead:Lead,status:string){
-    await supabase.from("leads").update({status}).eq("id",lead.id);
-    setLeads(prev=>prev.map(l=>l.id===lead.id?{...l,status}:l));
-  }
-  async function deleteLead(id:string){ if(!confirm("Delete tong lead na to?")) return; await supabase.from("leads").delete().eq("id",id); setLeads(prev=>prev.filter(l=>l.id!==id)); }
-
-  // PUBLIC FORM
-  if(isInquire){
-    if(pfDone) return (<div className="max-w-md mx-auto p-6 text-center pt-20"><div className="text-6xl mb-4">✅</div><h1 className="text-2xl font-bold">Na-receive na! Salamat {pfDone}!</h1><p className="mt-3 text-slate-600">Mag-message kami sa&apos;yo within 1 hour.</p><button onClick={()=>setPfDone("")} className="mt-6 w-full bg-[#10B981] text-white rounded-xl font-bold py-4">Mag-fill up ulit</button><p className="text-xs text-slate-400 mt-6">Hindi namin isi-share ang info mo.</p></div>);
-    return (<div className="max-w-md mx-auto p-5 pb-20">
-      <div className="text-center mt-6"><h1 className="text-3xl font-extrabold">Book / Mag-Inquire</h1><p className="text-slate-600 mt-2">Fill up lang, mag-message kami sa&apos;yo agad!</p></div>
-      <form onSubmit={submitPublic} className="mt-6 space-y-4">
-        <div><label className="font-bold">Pangalan *</label><input required value={pf.name} onChange={e=>setPf({...pf,name:e.target.value})} placeholder="Juan Dela Cruz" className="w-full border rounded-xl p-4 mt-1"/></div>
-        <div><label className="font-bold">Phone / FB Name *</label><input required value={pf.phone} onChange={e=>setPf({...pf,phone:e.target.value})} placeholder="0917-XXX-XXXX o FB Name" className="w-full border rounded-xl p-4 mt-1"/></div>
-        <div><label className="font-bold">Anong service gusto mo?</label><select value={pf.service} onChange={e=>setPf({...pf,service:e.target.value})} className="w-full border rounded-xl p-4 mt-1">{SERVICES.map(s=><option key={s}>{s}</option>)}</select></div>
-        <div><label className="font-bold">Budget (optional)</label><input type="number" value={pf.budget} onChange={e=>setPf({...pf,budget:e.target.value})} placeholder="1500" className="w-full border rounded-xl p-4 mt-1"/></div>
-        <div><label className="font-bold">Notes / Gusto mong oras?</label><textarea value={pf.notes} onChange={e=>setPf({...pf,notes:e.target.value})} placeholder="Gusto ko bukas ng hapon..." className="w-full border rounded-xl p-4 mt-1"/></div>
-        <button className="w-full bg-[#10B981] text-white rounded-xl font-bold text-lg py-4">SEND INQUIRY</button>
-        <p className="text-center text-xs text-slate-400">Hindi namin isi-share ang info mo.</p>
-      </form>
-    </div>);
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return alert("Lagay mo muna Pangalan mo");
+    if (!phone.trim()) return alert("Lagay mo muna Phone Number mo - required yan para ma-contact ka namin");
+    // FB Link is OPTIONAL - no validation
+    setSending(true);
+    const { error } = await supabase.from("leads").insert([{
+      name: name.trim(),
+      phone: phone.trim(),
+      fb_link: fbLink.trim() || null,
+      service,
+      source: view === "inquire" ? "Public Form" : source,
+      budget: budget ? Number(budget) : null,
+      notes: notes.trim() || null,
+      status: "Bagong Inquiry",
+    }]);
+    setSending(false);
+    if (error) {
+      alert("Error: " + error.message);
+      return;
+    }
+    alert("Salamat! Na-save na inquiry mo. Reply kami agad!");
+    setName(""); setPhone(""); setFbLink(""); setBudget(""); setNotes("");
+    if (view === "inquire") return;
+    fetchLeads();
   }
 
-  // PIN GATE
-  if(!unlocked) return (<div className="max-w-sm mx-auto p-6 pt-24 text-center"><h1 className="text-2xl font-extrabold">Lead Catcher PH</h1><p className="text-slate-600 mt-1">Owner Dashboard - Enter PIN</p><input type="password" inputMode="numeric" value={pin} onChange={e=>setPin(e.target.value)} placeholder="PIN" className="w-full border rounded-xl p-4 mt-6 text-center text-2xl tracking-widest"/><button onClick={()=>{ if(pin===savedPin){ setUnlocked(true); localStorage.setItem("lcp_unlocked","1"); } else alert("Mali yung PIN, try ulit."); }} className="w-full bg-[#10B981] text-white rounded-xl font-bold py-4 mt-3">UNLOCK</button><p className="text-xs text-slate-400 mt-3">Default PIN: 1234 - palitan mo sa dashboard footer</p></div>);
+  async function updateStatus(id: number, status: string) {
+    await supabase.from("leads").update({ status }).eq("id", id);
+    fetchLeads();
+  }
 
-  const today = leads.filter(l=> new Date(l.created_at).toDateString()===new Date().toDateString());
-  const week = leads.filter(l=> Date.now()-new Date(l.created_at).getTime() < 7*86400000);
-  const paid = leads.filter(l=>l.status==="Nagbayad").length;
-  const conv = leads.length? Math.round(paid/leads.length*100):0;
-  const lost = leads.filter(l=>l.status.startsWith("Dead")).length;
-  const filtered = leads.filter(l=>{
-    const q = search.toLowerCase();
-    const match = !q || l.name.toLowerCase().includes(q) || l.service.toLowerCase().includes(q) || l.phone.toLowerCase().includes(q);
-    const st = filter==="All" || l.status===filter;
-    return match && st;
-  }).sort((a,b)=>{
-    const urg = (l:Lead)=> (l.status==="Kinausap"&&hoursSince(l.created_at)>24)?2 : (l.status==="Bagong Inquiry"&&hoursSince(l.created_at)>2)?1:0;
-    return urg(b)-urg(a) || new Date(b.created_at).getTime()-new Date(a.created_at).getTime();
+  async function deleteLead(id: number) {
+    if (!confirm("Delete this lead?")) return;
+    await supabase.from("leads").delete().eq("id", id);
+    fetchLeads();
+  }
+
+  // Stats
+  const today = new Date().toDateString();
+  const todayLeads = leads.filter(l => new Date(l.created_at).toDateString() === today);
+  const weekLeads = leads.filter(l => {
+    const d = new Date(l.created_at);
+    const now = new Date();
+    const diff = (now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24);
+    return diff <= 7;
+  });
+  const paid = leads.filter(l => l.status === "Nagbayad").length;
+  const conversion = leads.length ? Math.round((paid / leads.length) * 100) : 0;
+  const lost = leads.filter(l => l.status === "Dead").length;
+
+  const filtered = leads.filter(l => {
+    const matchSearch = (l.name + " " + l.phone + " " + (l.fb_link || "") + " " + l.service).toLowerCase().includes(search.toLowerCase());
+    const matchFilter = filter === "All" || l.status === filter;
+    return matchSearch && matchFilter;
   });
 
-  return (<div className="max-w-2xl mx-auto p-4 pb-24">
-    <header className="pt-2"><h1 className="text-2xl font-extrabold">Lead Catcher <span className="text-[#10B981]">- Walang Lead na Mawawala</span></h1><p className="text-slate-600">50 inquiries? Lahat naka-save, lahat may follow-up.</p></header>
-    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 mt-4 text-sm"><b>Customer Link mo:</b> add <code>?view=inquire</code> sa dulo ng Vercel link mo. Hal: your-app.vercel.app/?view=inquire - i-send sa Messenger / FB Bio / TikTok Bio</div>
-    <div className="grid grid-cols-2 gap-3 mt-4">
-      <div className="bg-white border rounded-2xl p-4 shadow-sm"><p className="text-xs text-slate-500">Total Leads Today</p><p className="text-3xl font-extrabold">{today.length}</p></div>
-      <div className="bg-white border rounded-2xl p-4 shadow-sm"><p className="text-xs text-slate-500">Total This Week</p><p className="text-3xl font-extrabold">{week.length}</p></div>
-      <div className="bg-white border rounded-2xl p-4 shadow-sm"><p className="text-xs text-slate-500">Conversion Rate</p><p className="text-3xl font-extrabold text-[#10B981]">{conv}%</p><p className="text-xs">{paid} / {leads.length} nagbayad</p></div>
-      <div className="bg-white border rounded-2xl p-4 shadow-sm"><p className="text-xs text-slate-500">Lost Leads</p><p className="text-3xl font-extrabold text-red-500">{lost}</p></div>
+  function getBadge(l: Lead) {
+    const hours = (Date.now() - new Date(l.created_at).getTime()) / (1000 * 60 * 60);
+    if (l.status === "Bagong Inquiry" && hours > 2) return { text: "REPLY AGAD!", color: "#F97316" };
+    if (l.status === "Kinausap" && hours > 24) return { text: "FOLLOW-UP NA!", color: "#EF4444" };
+    return null;
+  }
+
+  const inputStyle: React.CSSProperties = { width: "100%", padding: 12, border: "1px solid #E2E8F0", borderRadius: 12, background: "white", fontSize: 16, boxSizing: "border-box" };
+  const cardStyle: React.CSSProperties = { background: "white", borderRadius: 16, padding: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" };
+
+  // ===== CLIENT FORM VIEW =====
+  if (view === "inquire") {
+    return (
+      <div style={{ minHeight: "100vh", background: "#F8FAFC", padding: 16, fontFamily: "system-ui, sans-serif", color: "#0F172A" }}>
+        <div style={{ maxWidth: 480, margin: "0 auto" }}>
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>Mag-Inquire</h1>
+            <p style={{ color: "#64748B", margin: "6px 0 0" }}>30 seconds lang, reply kami agad!</p>
+          </div>
+          <form onSubmit={handleSubmit} style={{ ...cardStyle, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div>
+              <label style={{ fontWeight: 700, fontSize: 14 }}>Pangalan *</label>
+              <input style={inputStyle} placeholder="Hal. Rosa Castro" value={name} onChange={e => setName(e.target.value)} required />
+            </div>
+            <div>
+              <label style={{ fontWeight: 700, fontSize: 14 }}>Phone Number *</label>
+              <input style={inputStyle} placeholder="Hal. 09676706327" value={phone} onChange={e => setPhone(e.target.value)} required type="tel" />
+              <p style={{ fontSize: 12, color: "#64748B", margin: "4px 0 0" }}>Dito ka namin i-contact. Required to para hindi ka mawala.</p>
+            </div>
+            <div>
+              <label style={{ fontWeight: 700, fontSize: 14 }}>Anong service gusto mo?</label>
+              <select style={inputStyle} value={service} onChange={e => setService(e.target.value)}>
+                <option>Nail Extension</option>
+                <option>Softgel</option>
+                <option>Manicure / Pedicure</option>
+                <option>Lash Extension</option>
+                <option>Brow / Lash Lift</option>
+                <option>Hair / Makeup</option>
+                <option>Printing / Custom</option>
+                <option>Iba pa</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontWeight: 700, fontSize: 14 }}>Budget (Optional)</label>
+              <input style={inputStyle} placeholder="Hal. 2000" value={budget} onChange={e => setBudget(e.target.value)} type="number" />
+            </div>
+            <div>
+              <label style={{ fontWeight: 700, fontSize: 14 }}>FB Link (Optional)</label>
+              <input style={inputStyle} placeholder="Hal. facebook.com/rosa.castro" value={fbLink} onChange={e => setFbLink(e.target.value)} />
+              <p style={{ fontSize: 12, color: "#64748B", margin: "4px 0 0" }}>Optional lang, pwede i-skip. Phone lang okay na.</p>
+            </div>
+            <div>
+              <label style={{ fontWeight: 700, fontSize: 14 }}>Notes (Optional)</label>
+              <textarea style={{ ...inputStyle, minHeight: 70 }} placeholder="Hal. Gusto ko bukas 9am..." value={notes} onChange={e => setNotes(e.target.value)} />
+            </div>
+            <button disabled={sending} type="submit" style={{ background: "#10B981", color: "white", border: "none", padding: 14, borderRadius: 12, fontWeight: 800, fontSize: 16, minHeight: 48, cursor: "pointer" }}>
+              {sending ? "Sine-send..." : "SEND INQUIRY"}
+            </button>
+            <p style={{ textAlign: "center", fontSize: 12, color: "#94A3B8", margin: 0 }}>Hindi namin i-share ang number mo.</p>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== OWNER DASHBOARD VIEW =====
+  return (
+    <div style={{ minHeight: "100vh", background: "#F8FAFC", padding: 16, fontFamily: "system-ui, sans-serif", color: "#0F172A" }}>
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{ background: "#0F172A", color: "white", borderRadius: 16, padding: 20, marginBottom: 16 }}>
+          <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800 }}>Lead Catcher</h1>
+          <p style={{ margin: "4px 0 0", opacity: 0.85 }}>Walang Lead na Mawawala</p>
+          <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.7 }}>50 inquiries? Lahat naka-save, lahat may follow-up.</p>
+          <div style={{ marginTop: 12, background: "rgba(255,255,255,0.1)", padding: 10, borderRadius: 10, fontSize: 13 }}>
+            Client link: <b>lead-catcher-ph-wewt.vercel.app/?view=inquire</b> — i-send mo sa clients
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <div style={cardStyle}><div style={{ fontSize: 12, color: "#64748B" }}>Total Leads Today</div><div style={{ fontSize: 28, fontWeight: 800 }}>{todayLeads.length}</div></div>
+          <div style={cardStyle}><div style={{ fontSize: 12, color: "#64748B" }}>Total This Week</div><div style={{ fontSize: 28, fontWeight: 800 }}>{weekLeads.length}</div></div>
+          <div style={cardStyle}><div style={{ fontSize: 12, color: "#64748B" }}>Conversion Rate</div><div style={{ fontSize: 22, fontWeight: 800 }}>{conversion}% — {paid} / {leads.length} nagbayad</div></div>
+          <div style={cardStyle}><div style={{ fontSize: 12, color: "#64748B" }}>Lost Leads</div><div style={{ fontSize: 28, fontWeight: 800, color: "#EF4444" }}>{lost}</div></div>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ ...cardStyle, display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>+ Add Lead (Owner)</h2>
+          <input style={inputStyle} placeholder="Pangalan *" value={name} onChange={e => setName(e.target.value)} required />
+          <input style={inputStyle} placeholder="Phone Number * - Hal. 09676706327" value={phone} onChange={e => setPhone(e.target.value)} required type="tel" />
+          <input style={inputStyle} placeholder="FB Link (Optional) - Hal. facebook.com/rosa.castro" value={fbLink} onChange={e => setFbLink(e.target.value)} />
+          <select style={inputStyle} value={service} onChange={e => setService(e.target.value)}>
+            <option>Nail Extension</option><option>Softgel</option><option>Manicure / Pedicure</option><option>Lash Extension</option><option>Brow / Lash Lift</option><option>Hair / Makeup</option><option>Printing / Custom</option><option>Iba pa</option>
+          </select>
+          <select style={inputStyle} value={source} onChange={e => setSource(e.target.value)}>
+            <option>Facebook</option><option>TikTok</option><option>Walk-in</option><option>【entity-Shopee¦canonical_name=Shopee】</option><option>Referral</option><option>Public Form</option>
+          </select>
+          <input style={inputStyle} placeholder="Budget" value={budget} onChange={e => setBudget(e.target.value)} type="number" />
+          <textarea style={{ ...inputStyle, minHeight: 60 }} placeholder="Notes" value={notes} onChange={e => setNotes(e.target.value)} />
+          <button disabled={sending} type="submit" style={{ background: "#10B981", color: "white", border: "none", padding: 14, borderRadius: 12, fontWeight: 800, fontSize: 16, minHeight: 48 }}>{sending ? "Saving..." : "SAVE LEAD"}</button>
+        </form>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input style={{ ...inputStyle, flex: 1 }} placeholder="Search name / phone / service..." value={search} onChange={e => setSearch(e.target.value)} />
+          <select style={{ ...inputStyle, width: 160 }} value={filter} onChange={e => setFilter(e.target.value)}>
+            <option>All</option><option>Bagong Inquiry</option><option>Kinausap</option><option>Nag-Follow Up</option><option>Nagbayad</option><option>Dead</option>
+          </select>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {loading ? <p>Loading...</p> : filtered.length === 0 ? <p style={{ textAlign: "center", color: "#64748B" }}>Walang leads pa. Mag-add ka muna.</p> : filtered.map(l => {
+            const badge = getBadge(l);
+            return (
+              <div key={l.id} style={cardStyle}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 16 }}>{l.name}</div>
+                    <div style={{ fontSize: 13, color: "#334155" }}>{l.service} • {l.source}</div>
+                    <div style={{ fontSize: 13, color: "#0F172A", fontWeight: 600 }}>📞 {l.phone}</div>
+                    {l.fb_link && <a href={l.fb_link.startsWith("http") ? l.fb_link : `https://${l.fb_link}`} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: "#2563EB" }}>🔗 {l.fb_link}</a>}
+                    <div style={{ fontSize: 12, color: "#64748B" }}>{new Date(l.created_at).toLocaleString()} • Budget: {l.budget ? `₱${l.budget}` : "—"}</div>
+                    {l.notes && <div style={{ fontSize: 13, marginTop: 4 }}>📝 {l.notes}</div>}
+                    {l.source === "Public Form" && <span style={{ fontSize: 11, background: "#DBEAFE", color: "#1D4ED8", padding: "2px 8px", borderRadius: 999, fontWeight: 700 }}>Galing sa Form</span>}
+                  </div>
+                  <button onClick={() => deleteLead(l.id)} style={{ background: "#FEE2E2", color: "#DC2626", border: "none", padding: "6px 10px", borderRadius: 8, fontSize: 12 }}>Delete</button>
+                </div>
+                {badge && <div style={{ marginTop: 8, background: badge.color, color: "white", padding: "6px 10px", borderRadius: 8, fontWeight: 800, fontSize: 12, display: "inline-block" }}>{badge.text}</div>}
+                <select value={l.status} onChange={e => updateStatus(l.id, e.target.value)} style={{ ...inputStyle, marginTop: 10 }}>
+                  <option>Bagong Inquiry</option><option>Kinausap</option><option>Nag-Follow Up</option><option>Nagbayad</option><option>Dead</option>
+                </select>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button onClick={() => navigator.clipboard.writeText(`Hi ${l.name}! Kamusta, naka-receive kami ng inquiry mo for ${l.service}. Available ka pa ba?`)} style={{ background: "#F1F5F9", border: "1px solid #E2E8F0", padding: "8px 12px", borderRadius: 10, fontSize: 12, fontWeight: 700 }}>COPY: Follow-up</button>
+                  <button onClick={() => navigator.clipboard.writeText(`Hi ${l.name}! Ready ka na ba magpa-book for ${l.service}?`)} style={{ background: "#FFF7ED", border: "1px solid #FDBA74", padding: "8px 12px", borderRadius: 10, fontSize: 12, fontWeight: 700 }}>COPY: Book Now</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
-    {toast && <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-[#0F172A] text-white px-4 py-3 rounded-full z-50 text-sm shadow-lg">{toast}</div>}
-    <form onSubmit={saveLead} className="bg-white border rounded-2xl p-4 mt-4 shadow-sm space-y-3">
-      <h2 className="font-extrabold text-lg">+ Add Lead (Owner)</h2>
-      <input required value={f.name} onChange={e=>setF({...f,name:e.target.value})} placeholder="Name *" className="w-full border rounded-xl p-4"/>
-      <input value={f.phone} onChange={e=>setF({...f,phone:e.target.value})} placeholder="Phone / FB Name" className="w-full border rounded-xl p-4"/>
-      <input value={f.service} onChange={e=>setF({...f,service:e.target.value})} placeholder="Service Interested" className="w-full border rounded-xl p-4"/>
-      <div className="flex gap-3"><select value={f.source} onChange={e=>setF({...f,source:e.target.value})} className="flex-1 border rounded-xl p-4">{SOURCES.map(s=><option key={s}>{s}</option>)}</select><input type="number" value={f.budget} onChange={e=>setF({...f,budget:e.target.value})} placeholder="Budget ₱" className="flex-1 border rounded-xl p-4"/></div>
-      <textarea value={f.notes} onChange={e=>setF({...f,notes:e.target.value})} placeholder="Notes" className="w-full border rounded-xl p-4"/>
-      <button className="w-full bg-[#10B981] text-white rounded-xl font-bold text-lg py-4">SAVE LEAD</button>
-    </form>
-    <div className="flex gap-2 mt-5"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name / service..." className="flex-1 border rounded-xl p-4"/><select value={filter} onChange={e=>setFilter(e.target.value)} className="border rounded-xl p-4"><option>All</option>{STATUSES.map(s=><option key={s}>{s}</option>)}</select><button onClick={fetchLeads} className="border rounded-xl px-4 font-bold">REFRESH</button></div>
-    <div className="mt-4 space-y-3">{loading?<p className="text-center text-slate-400 py-8">Loading...</p>:filtered.length===0?<p className="text-center text-slate-400 py-8">Walang lead dito. Add ka muna.</p>:filtered.map(l=>{
-      const isFollow = l.status==="Kinausap" && hoursSince(l.created_at)>24;
-      const isReply = l.status==="Bagong Inquiry" && hoursSince(l.created_at)>2;
-      return (<div key={l.id} className="bg-white border rounded-2xl p-4 shadow-sm">
-        <div className="flex justify-between gap-2"><div><p className="font-extrabold text-lg">{l.name}</p><p className="text-sm text-slate-600">{l.service} • {l.phone}</p></div><span className="text-xs bg-slate-100 rounded-full px-3 py-1 h-fit">{l.source}</span></div>
-        {l.source==="Public Form" && <span className="inline-block mt-2 text-xs bg-emerald-100 text-emerald-700 rounded-full px-2 py-1 font-bold">Galing sa Form</span>}
-        {isFollow && <div className="mt-2 bg-red-100 text-red-700 font-bold text-sm rounded-lg px-3 py-2">🔴 FOLLOW-UP NA! - {timeAgo(l.created_at)}</div>}
-        {isReply && <div className="mt-2 bg-orange-100 text-orange-700 font-bold text-sm rounded-lg px-3 py-2">🟡 REPLY AGAD!</div>}
-        <div className="flex justify-between text-sm mt-3"><span>Budget: <b>{l.budget?`₱${Number(l.budget).toLocaleString()}`:"-"}</b></span><span className="text-slate-500">{timeAgo(l.created_at)}</span></div>
-        {l.notes && <p className="text-sm text-slate-600 mt-1">Notes: {l.notes}</p>}
-        <div className="flex gap-2 mt-3"><select value={l.status} onChange={e=>updateStatus(l,e.target.value)} className="flex-1 border rounded-xl p-3 font-bold">{STATUSES.map(s=><option key={s}>{s}</option>)}</select><button onClick={()=>setSelected(l)} className="bg-[#0F172A] text-white rounded-xl px-4 font-bold">Message</button><button onClick={()=>deleteLead(l.id)} className="border rounded-xl px-3 text-red-500">✕</button></div>
-      </div>);
-    })}</div>
-    <footer className="mt-8 text-center text-sm text-slate-500"><button onClick={()=>{ const np = prompt("Bagong PIN (4 digits):",savedPin); if(np){ setSavedPin(np); localStorage.setItem("lcp_pin",np); showToast("PIN updated!"); } }} className="underline">Palitan PIN</button> • <button onClick={()=>{ localStorage.removeItem("lcp_unlocked"); setUnlocked(false); }} className="underline">Lock Dashboard</button></footer>
-    {selected && <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50" onClick={()=>setSelected(null)}><div className="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl p-5 max-h-[90vh] overflow-auto" onClick={e=>e.stopPropagation()}>
-      <div className="flex justify-between"><h3 className="font-extrabold text-lg">Message kay {selected.name}</h3><button onClick={()=>setSelected(null)} className="text-xl px-2">✕</button></div>
-      {[
-        {t:"Template 1 - First Reply", m:`Hi ${selected.name}! Salamat sa pag-inquire about ${selected.service}. Available pa po kami. Gusto niyo po ba i-reserve ko kayo?`},
-        {t:"Template 2 - Follow-up 24h", m:`Hi ${selected.name}! Follow-up ko lang po yung inquiry niyo kahapon. May slot pa po kami bukas, gusto niyo po ba?`},
-        {t:"Template 3 - Closing", m:`Hi ${selected.name}! Last 2 slots na lang po for this week. I-reserve ko na po ba kayo?`},
-      ].map((tpl,i)=>(<div key={i} className="border rounded-2xl p-4 mt-3"><p className="font-bold text-sm">{tpl.t}</p><p className="text-sm mt-1 text-slate-700">{tpl.m}</p><button onClick={()=>{ navigator.clipboard.writeText(tpl.m); setCopied(tpl.t); setTimeout(()=>setCopied(""),2000); }} className="w-full bg-[#10B981] text-white rounded-xl font-bold py-3 mt-3">{copied===tpl.t?"Na-copy na! ✅":"COPY"}</button></div>))}
-    </div></div>}
-  </div>);
+  );
 }
-export default function Page(){ return <Suspense><App/></Suspense>; }
